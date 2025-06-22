@@ -1,65 +1,64 @@
-import argparse
 import subprocess
-import requests
 import sys
+import requests
 from pathlib import Path
-import importlib.util
 import socket
+from collections import deque
 
-def load_secrets():
-    secrets_path = Path.home() / ".darkcyan" / "darkcyan_secrets.py"
-    if not secrets_path.is_file():
-        print(f"Secrets file not found: {secrets_path}", file=sys.stderr)
-        sys.exit(1)
+# Load Slack webhook URL
+secrets_path = Path.home() / ".darkcyan" / "darkcyan_secrets.py"
+secrets = {}
+exec(secrets_path.read_text(), secrets)
 
-    spec = importlib.util.spec_from_file_location("darkcyan_secrets", str(secrets_path))
-    secrets = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(secrets)
-    return secrets
+webhook_url = secrets.get("SLACK_WEBHOOK")
 
-def send_slack_notification(webhook_url, message):
-    payload = {"text": message}
-    try:
-        response = requests.post(webhook_url, json=payload)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        print(f"Failed to send Slack notification: {e}", file=sys.stderr)
+if not webhook_url:
+    print("Slack webhook URL not found in secrets.")
+    sys.exit(1)
 
-def get_last_lines(text, num_lines=20):
-    lines = text.strip().splitlines()
-    return "\n".join(lines[-num_lines:]) if lines else "(no output)"
+# Command to run
+command = sys.argv[1:]
+if not command:
+    print("Usage: notify-run <command>")
+    sys.exit(1)
 
-def main():
-    parser = argparse.ArgumentParser(description="Run a command and notify Slack when done.")
-    parser.add_argument("command", help="The shell command to run.")
-    args = parser.parse_args()
+# Capture last 20 lines
+last_lines = deque(maxlen=20)
 
-    secrets = load_secrets()
-    webhook_url = getattr(secrets, "SLACK_WEBHOOK_URL", None)
-    if not webhook_url:
-        print("SLACK_WEBHOOK_URL not found in secrets file.", file=sys.stderr)
-        sys.exit(1)
+# Run command, stream output to terminal + capture
+process = subprocess.Popen(
+    command,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    bufsize=1,
+    universal_newlines=True
+)
 
-    hostname = socket.gethostname()
+for line in process.stdout:
+    print(line, end="")       # stream to terminal
+    last_lines.append(line)   # capture for Slack
 
-    print(f"[{hostname}] Running command: {args.command}")
-    result = subprocess.run(args.command, shell=True, capture_output=True, text=True)
+process.wait()
+return_code = process.returncode
 
-    status = "✅ Success" if result.returncode == 0 else "❌ Failed"
-    output_tail = get_last_lines(result.stdout)
+# Compose Slack message
+hostname = socket.gethostname()
+message = (
+    f"*Command finished on `{hostname}`*\n"
+    f"Command: `{' '.join(command)}`\n"
+    f"Exit Code: `{return_code}`\n"
+    "Last output:\n"
+    "```\n"
+    f"{''.join(last_lines)}"
+    "```"
+)
 
-    message = (
-        f"*notify-run* on `{hostname}`:\n"
-        f"`{args.command}`\n"
-        f"*Status:* {status}\n"
-        f"*Exit code:* {result.returncode}\n"
-        f"```{output_tail}```"
-    )
-    send_slack_notification(webhook_url, message)
+# Send to Slack
+response = requests.post(webhook_url, json={"text": message})
 
-    if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
-        sys.exit(result.returncode)
+if response.status_code != 200:
+    print(f"Slack notification failed: {response.status_code}, {response.text}")
 
-if __name__ == "__main__":
-    main()
+# Exit with same code as subprocess
+sys.exit(return_code)
