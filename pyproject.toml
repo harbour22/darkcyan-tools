@@ -1,0 +1,21 @@
+[project]
+name = "darkcyan-tools"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Chris",email = "developer@harbour22.uk"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "requests (>=2.32.4,<3.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[project.scripts]
+notify-run = "darkcyan_tools.notify_run:main"
