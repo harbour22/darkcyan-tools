@@ -4,6 +4,8 @@ import requests
 from pathlib import Path
 import socket
 from collections import deque
+import pty
+import os
 
 # Load Slack webhook URL
 secrets_path = Path.home() / ".darkcyan" / "darkcyan_secrets.py"
@@ -25,22 +27,28 @@ if not command:
 # Capture last 20 lines
 last_lines = deque(maxlen=20)
 
-# Run command, stream output to terminal + capture
-process = subprocess.Popen(
-    command,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    text=True,
-    bufsize=1,
-    universal_newlines=True
-)
+# Spawn process attached to pty (pseudo-terminal)
+def read(fd):
+    while True:
+        try:
+            output = os.read(fd, 1024).decode()
+        except OSError:
+            break
+        if not output:
+            break
+        print(output, end="")
+        for line in output.splitlines(keepends=True):
+            last_lines.append(line)
 
-for line in process.stdout:
-    print(line, end="")       # stream to terminal
-    last_lines.append(line)   # capture for Slack
-
-process.wait()
-return_code = process.returncode
+pid, fd = pty.fork()
+if pid == 0:
+    # Child process
+    os.execvp(command[0], command)
+else:
+    # Parent process
+    read(fd)
+    pid, status = os.waitpid(pid, 0)
+    return_code = os.WEXITSTATUS(status)
 
 # Compose Slack message
 hostname = socket.gethostname()
@@ -60,5 +68,4 @@ response = requests.post(webhook_url, json={"text": message})
 if response.status_code != 200:
     print(f"Slack notification failed: {response.status_code}, {response.text}")
 
-# Exit with same code as subprocess
 sys.exit(return_code)
