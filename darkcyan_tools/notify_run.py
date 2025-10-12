@@ -7,16 +7,26 @@ from collections import deque
 import pty
 import os
 
-# Load Slack webhook URL
+# Load Pushover API credentials
 secrets_path = Path.home() / ".darkcyan" / "darkcyan_secrets.py"
 secrets = {}
 exec(secrets_path.read_text(), secrets)
 
-webhook_url = secrets.get("SLACK_WEBHOOK")
+pushover_token = secrets.get("PUSHOVER_TOKEN")
+pushover_user = secrets.get("PUSHOVER_USER")
+pushover_devices = secrets.get("PUSHOVER_DEVICES")  # Optional: comma-separated string or list
 
-if not webhook_url:
-    print("Slack webhook URL not found in secrets.")
+if not pushover_token or not pushover_user:
+    print("Pushover credentials not found in secrets.")
     sys.exit(1)
+
+# Normalize device list
+if pushover_devices:
+    if isinstance(pushover_devices, list):
+        pushover_devices = ",".join(pushover_devices)
+    elif not isinstance(pushover_devices, str):
+        print("PUSHOVER_DEVICES must be a string or list.")
+        sys.exit(1)
 
 # Command to run
 command = sys.argv[1:]
@@ -27,7 +37,6 @@ if not command:
 # Capture last 20 lines
 last_lines = deque(maxlen=20)
 
-# Spawn process attached to pty (pseudo-terminal)
 def read(fd):
     while True:
         try:
@@ -50,22 +59,32 @@ else:
     pid, status = os.waitpid(pid, 0)
     return_code = os.WEXITSTATUS(status)
 
-# Compose Slack message
+# Compose Pushover message
 hostname = socket.gethostname()
+title = f"Command finished on {hostname}"
 message = (
-    f"*Command finished on `{hostname}`*\n"
-    f"Command: `{' '.join(command)}`\n"
-    f"Exit Code: `{return_code}`\n"
+    f"Command: {' '.join(command)}\n"
+    f"Exit Code: {return_code}\n"
     "Last output:\n"
-    "```\n"
     f"{''.join(last_lines)}"
-    "```"
 )
 
-# Send to Slack
-response = requests.post(webhook_url, json={"text": message})
+# Build request payload
+data = {
+    "token": pushover_token,
+    "user": pushover_user,
+    "title": title,
+    "message": message,
+    "expire": 60*60*4,
+}
+
+if pushover_devices:
+    data["device"] = pushover_devices  # comma-separated list of devices
+
+# Send to Pushover
+response = requests.post("https://api.pushover.net/1/messages.json", data=data)
 
 if response.status_code != 200:
-    print(f"Slack notification failed: {response.status_code}, {response.text}")
+    print(f"Pushover notification failed: {response.status_code}, {response.text}")
 
 sys.exit(return_code)
